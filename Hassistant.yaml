@@ -1,0 +1,179 @@
+esphome:
+  name: hassistant
+  friendly_name: Hassistant
+  on_boot:
+    - priority: -100
+      then:
+        - wait_until: api.connected
+        - delay: 1s
+        - if:
+            condition:
+              switch.is_on: use_wake_word
+            then:
+              - voice_assistant.start_continuous
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: "jaBGOHjqVXkNum+NHE0ATSTvD6iiovJ5t1zvnTYOoEU="
+
+ota:
+  password: "96aef139b0ec79c138d94ef22f497b19"
+
+wifi:
+  ssid: "Linnutee"
+  password: "Kaktus17"
+  fast_connect: true
+  manual_ip:
+    static_ip: 192.168.5.36
+    gateway: 192.168.5.1
+    subnet: 255.255.255.0
+    dns1: 192.168.5.1
+  ap:
+    ssid: "Hassistant Hotspot"
+    password: "Une3mati"
+
+captive_portal:
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/rihosilmberg/hassistant-esphome
+      ref: main
+    components: [esp_adf]
+    refresh: 0s
+
+esp_adf:
+
+substitutions:
+  voice_assist_idle_phase_id: '1'
+  voice_assist_listening_phase_id: '2'
+  voice_assist_thinking_phase_id: '3'
+  voice_assist_replying_phase_id: '4'
+  voice_assist_not_ready_phase_id: '10'
+  voice_assist_error_phase_id: '11'
+  voice_assist_muted_phase_id: '12'
+
+i2s_audio:
+  - id: i2s_in
+    i2s_lrclk_pin: GPIO1
+    i2s_bclk_pin: GPIO2
+  - id: i2s_out
+    i2s_lrclk_pin: GPIO1
+    i2s_bclk_pin: GPIO2
+
+microphone:
+  platform: i2s_audio
+  id: external_microphone
+  adc_type: external
+  i2s_audio_id: i2s_in
+  i2s_din_pin: GPIO4
+  pdm: false
+  bits_per_sample: 32bit
+
+speaker:
+  platform: i2s_audio
+  id: external_speaker
+  dac_type: external
+  i2s_audio_id: i2s_out
+  i2s_dout_pin: GPIO3
+  i2s_mode: mono
+
+voice_assistant:
+  id: va
+  microphone: external_microphone
+  speaker: external_speaker
+  use_wake_word: true
+  noise_suppression_level: 1
+  auto_gain: 31dBFS
+  volume_multiplier: 2.5
+
+  on_listening:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+
+  on_stt_vad_end:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+
+  on_tts_stream_start:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+
+  on_tts_stream_end:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+
+  on_error:
+    - if:
+        condition:
+          lambda: return !id(init_in_progress);
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+          - delay: 1s
+          - if:
+              condition:
+                switch.is_on: use_wake_word
+              then:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              else:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+
+  on_client_connected:
+    - if:
+        condition:
+          switch.is_on: use_wake_word
+        then:
+          - voice_assistant.start_continuous
+          - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+        else:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+
+  on_client_disconnected:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+
+switch:
+  - platform: template
+    name: "Use Wake Word"
+    id: use_wake_word
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+            - if:
+                condition:
+                  not:
+                    - voice_assistant.is_running
+                then:
+                  - voice_assistant.start_continuous
+
+    on_turn_off:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - voice_assistant.stop
+            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+
+globals:
+  - id: init_in_progress
+    type: bool
+    restore_value: no
+    initial_value: 'true'
+  - id: voice_assistant_phase
+    type: int
+    restore_value: no
+    initial_value: ${voice_assist_not_ready_phase_id}
+
+sensor:
+  - platform: template
+    name: "Voice Assistant Phase"
+    lambda: |-
+      return id(voice_assistant_phase);
+    update_interval: 1s
